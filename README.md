@@ -141,7 +141,8 @@ YouTube 추천 시스템
 3. 변경사항 커밋 (`git commit -m 'Add amazing feature'`)
 4. 브랜치에 Push (`git push origin feature/amazing-feature`)
 5. Pull Request 생성
-🥋 주짓수 수련생을 위한 AI 맞춤 훈련 시스템을 만들었습니다!
+
+## 🥋 주짓수 수련생을 위한 AI 맞춤 훈련 시스템을 만들었습니다!
 
 ✨ 주요 기능:
 - 띠별 맞춤 프로그램 자동 생성
