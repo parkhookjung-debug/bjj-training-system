@@ -3,7 +3,7 @@
 Brazilian Jiu-Jitsu 수련생을 위한 AI 기반 개인 맞춤 훈련 프로그램 생성 시스템
 
 ## 🌐 온라인 체험
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://sangmon.streamlit.app)
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://parkhookjung-debug.streamlit.app)
 
 ## 🥋 주요 기능
 
@@ -38,7 +38,7 @@ Brazilian Jiu-Jitsu 수련생을 위한 AI 기반 개인 맞춤 훈련 프로그
 ### 로컬 설치
 ```bash
 # 저장소 복제
-git clone https://github.com/sangmon/bjj-training-system.git
+git clone https://github.com/parkhookjung-debug/bjj-training-system.git
 
 # 디렉토리 이동
 cd bjj-training-system
@@ -154,8 +154,8 @@ YouTube 추천 시스템
 
 ## 📞 연락처
 
-- 프로젝트 링크: [https://github.com/sangmon/bjj-training-system](https://github.com/sangmon/bjj-training-system)
-- 이슈 리포트: [Issues](https://github.com/sangmon/bjj-training-system/issues)
+- 프로젝트 링크: [https://github.com/parkhookjung-debug/bjj-training-system.git](https://github.com/parkhookjung-debug/bjj-training-system.git)
+- 이슈 리포트: [Issues](https://github.com/parkhookjung-debug/bjj-training-system.git)
 
 ---
 
