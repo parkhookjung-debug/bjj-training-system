@@ -389,280 +389,530 @@ class EnhancedNLPProcessor:
         final_confidence = min(base_confidence + length_bonus + (intent_confidence * 0.3) + specific_bonus, 1.0)
         return round(final_confidence, 2)
 
-# =============================================================================
-# 데이터베이스 관리 클래스 (기존 유지)
-# =============================================================================
+# 개선된 데이터베이스 연결 관리 시스템
+# 기존 BJJDatabase 클래스를 완전히 교체하세요
 
-class BJJDatabase:
-    """BJJ 훈련 시스템 데이터베이스 관리"""
+import sqlite3
+import contextlib
+import logging
+from typing import Dict, List, Optional, Iterator
+import uuid
+import hashlib
+import json
+from datetime import datetime
+
+# 커스텀 예외 클래스
+class DatabaseError(Exception):
+    """데이터베이스 관련 예외"""
+    pass
+
+class ConnectionError(DatabaseError):
+    """데이터베이스 연결 예외"""
+    pass
+
+class DataIntegrityError(DatabaseError):
+    """데이터 무결성 예외"""
+    pass
+
+class ImprovedBJJDatabase:
+    """개선된 BJJ 훈련 시스템 데이터베이스 관리 클래스"""
     
     def __init__(self, db_path: str = "bjj_training.db"):
         self.db_path = db_path
-        self.init_database()
+        self.logger = self._setup_logger()
+        
+        # 데이터베이스 초기화
+        try:
+            self.init_database()
+            self.logger.info(f"Database initialized successfully: {db_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize database: {e}")
+            raise ConnectionError(f"데이터베이스 초기화 실패: {e}")
+    
+    def _setup_logger(self) -> logging.Logger:
+        """로거 설정"""
+        logger = logging.getLogger(f"BJJDatabase_{id(self)}")
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            )
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+        return logger
+    
+    @contextlib.contextmanager
+    def get_connection(self) -> Iterator[sqlite3.Connection]:
+        """
+        안전한 데이터베이스 연결 컨텍스트 매니저
+        자동으로 연결을 열고 닫으며, 에러 발생시 롤백 처리
+        """
+        conn = None
+        try:
+            conn = sqlite3.connect(
+                self.db_path,
+                timeout=10.0,  # 10초 타임아웃
+                check_same_thread=False  # Streamlit에서 필요
+            )
+            # Row factory 설정으로 딕셔너리 형태 결과 반환
+            conn.row_factory = sqlite3.Row
+            
+            # WAL 모드 설정 (동시 읽기 성능 향상)
+            conn.execute("PRAGMA journal_mode=WAL")
+            
+            # 외래키 제약 조건 활성화
+            conn.execute("PRAGMA foreign_keys=ON")
+            
+            self.logger.debug("Database connection established")
+            yield conn
+            
+        except sqlite3.OperationalError as e:
+            self.logger.error(f"Database operational error: {e}")
+            if conn:
+                conn.rollback()
+            raise ConnectionError(f"데이터베이스 연결 오류: {e}")
+            
+        except sqlite3.IntegrityError as e:
+            self.logger.error(f"Database integrity error: {e}")
+            if conn:
+                conn.rollback()
+            raise DataIntegrityError(f"데이터 무결성 오류: {e}")
+            
+        except Exception as e:
+            self.logger.error(f"Unexpected database error: {e}")
+            if conn:
+                conn.rollback()
+            raise DatabaseError(f"예상치 못한 데이터베이스 오류: {e}")
+            
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                    self.logger.debug("Database connection closed")
+                except Exception as e:
+                    self.logger.error(f"Error closing connection: {e}")
     
     def init_database(self):
         """데이터베이스 초기화 및 테이블 생성"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # 사용자 테이블
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id TEXT PRIMARY KEY,
-                username TEXT UNIQUE NOT NULL,
-                email TEXT UNIQUE,
-                password_hash TEXT,
-                current_belt TEXT NOT NULL,
-                current_stripes INTEGER DEFAULT 0,
-                experience_months INTEGER DEFAULT 0,
-                gi_preference TEXT DEFAULT 'both',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_login TIMESTAMP,
-                total_sessions INTEGER DEFAULT 0,
-                total_hours REAL DEFAULT 0.0
-            )
-        ''')
-        
-        # 훈련 세션 테이블
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS training_sessions (
-                id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                session_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                belt_level TEXT NOT NULL,
-                total_duration INTEGER NOT NULL,
-                completion_rate REAL NOT NULL,
-                difficulty_rating INTEGER,
-                enjoyment_rating INTEGER,
-                techniques_practiced TEXT, -- JSON string
-                program_data TEXT, -- JSON string
-                notes TEXT,
-                nlp_analysis TEXT, -- 추가: NLP 분석 결과 저장
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            )
-        ''')
-        
-        # 사용자 선호도 테이블
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS user_preferences (
-                user_id TEXT PRIMARY KEY,
-                preferred_positions TEXT, -- JSON string
-                avoided_techniques TEXT, -- JSON string
-                training_goals TEXT, -- JSON string
-                weekly_frequency INTEGER DEFAULT 3,
-                preferred_session_length INTEGER DEFAULT 60,
-                injury_considerations TEXT,
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            )
-        ''')
-        
-        # 기술 마스터리 추적 테이블
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS technique_mastery (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                technique_name TEXT NOT NULL,
-                category TEXT NOT NULL,
-                difficulty INTEGER NOT NULL,
-                practice_count INTEGER DEFAULT 0,
-                last_practiced TIMESTAMP,
-                mastery_level REAL DEFAULT 0.0, -- 0.0 to 1.0
-                success_rate REAL DEFAULT 0.0,
-                notes TEXT,
-                FOREIGN KEY (user_id) REFERENCES users (id),
-                UNIQUE(user_id, technique_name)
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
-    
-    def create_user(self, username: str, email: str, password: str, belt: str) -> str:
-        """새 사용자 생성"""
-        user_id = str(uuid.uuid4())
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
-        
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute('''
-                INSERT INTO users (id, username, email, password_hash, current_belt)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (user_id, username, email, password_hash, belt))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
             
-            # 기본 선호도 설정
+            # 사용자 테이블
             cursor.execute('''
-                INSERT INTO user_preferences (user_id, preferred_positions, training_goals)
-                VALUES (?, ?, ?)
-            ''', (user_id, json.dumps([]), json.dumps(['technique'])))
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    username TEXT UNIQUE NOT NULL,
+                    email TEXT UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    current_belt TEXT NOT NULL,
+                    current_stripes INTEGER DEFAULT 0,
+                    experience_months INTEGER DEFAULT 0,
+                    gi_preference TEXT DEFAULT 'both',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_login TIMESTAMP,
+                    total_sessions INTEGER DEFAULT 0,
+                    total_hours REAL DEFAULT 0.0,
+                    is_active BOOLEAN DEFAULT 1
+                )
+            ''')
+            
+            # 훈련 세션 테이블
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS training_sessions (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    session_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    belt_level TEXT NOT NULL,
+                    total_duration INTEGER NOT NULL,
+                    completion_rate REAL NOT NULL,
+                    difficulty_rating INTEGER,
+                    enjoyment_rating INTEGER,
+                    techniques_practiced TEXT, -- JSON string
+                    program_data TEXT, -- JSON string
+                    notes TEXT,
+                    nlp_analysis TEXT, -- NLP 분석 결과
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+                )
+            ''')
+            
+            # 사용자 선호도 테이블
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_preferences (
+                    user_id TEXT PRIMARY KEY,
+                    preferred_positions TEXT, -- JSON string
+                    avoided_techniques TEXT, -- JSON string
+                    training_goals TEXT, -- JSON string
+                    weekly_frequency INTEGER DEFAULT 3,
+                    preferred_session_length INTEGER DEFAULT 60,
+                    injury_considerations TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+                )
+            ''')
+            
+            # 기술 마스터리 추적 테이블
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS technique_mastery (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    technique_name TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    difficulty INTEGER NOT NULL,
+                    practice_count INTEGER DEFAULT 0,
+                    last_practiced TIMESTAMP,
+                    mastery_level REAL DEFAULT 0.0, -- 0.0 to 1.0
+                    success_rate REAL DEFAULT 0.0,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+                    UNIQUE(user_id, technique_name)
+                )
+            ''')
+            
+            # 인덱스 생성 (성능 향상)
+            self._create_indexes(cursor)
             
             conn.commit()
-            return user_id
+            self.logger.info("Database tables created/verified successfully")
+    
+    def _create_indexes(self, cursor):
+        """성능 향상을 위한 인덱스 생성"""
+        indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)",
+            "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)",
+            "CREATE INDEX IF NOT EXISTS idx_training_sessions_user_id ON training_sessions(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_training_sessions_date ON training_sessions(session_date)",
+            "CREATE INDEX IF NOT EXISTS idx_technique_mastery_user_id ON technique_mastery(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_technique_mastery_technique ON technique_mastery(technique_name)",
+            "CREATE INDEX IF NOT EXISTS idx_user_preferences_user_id ON user_preferences(user_id)"
+        ]
+        
+        for index_sql in indexes:
+            try:
+                cursor.execute(index_sql)
+                self.logger.debug(f"Index created: {index_sql}")
+            except sqlite3.Error as e:
+                self.logger.warning(f"Failed to create index: {e}")
+    
+    def create_user(self, username: str, email: str, password: str, belt: str) -> str:
+        """새 사용자 생성 (개선된 에러 처리)"""
+        try:
+            user_id = str(uuid.uuid4())
+            password_hash = hashlib.sha256(password.encode()).hexdigest()
+            
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # 사용자 생성
+                cursor.execute('''
+                    INSERT INTO users (id, username, email, password_hash, current_belt)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (user_id, username, email, password_hash, belt))
+                
+                # 기본 선호도 설정
+                cursor.execute('''
+                    INSERT INTO user_preferences (user_id, preferred_positions, training_goals)
+                    VALUES (?, ?, ?)
+                ''', (user_id, json.dumps([]), json.dumps(['technique'])))
+                
+                conn.commit()
+                self.logger.info(f"User created successfully: {username}")
+                return user_id
+                
         except sqlite3.IntegrityError as e:
-            conn.rollback()
-            raise ValueError(f"사용자 생성 실패: {str(e)}")
-        finally:
-            conn.close()
+            error_msg = str(e).lower()
+            if "username" in error_msg:
+                raise DataIntegrityError("이미 사용 중인 사용자명입니다.")
+            elif "email" in error_msg:
+                raise DataIntegrityError("이미 등록된 이메일입니다.")
+            else:
+                raise DataIntegrityError(f"데이터 무결성 오류: {e}")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to create user {username}: {e}")
+            raise DatabaseError(f"사용자 생성 실패: {e}")
     
     def authenticate_user(self, username: str, password: str) -> Optional[Dict]:
-        """사용자 인증"""
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
-        
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT id, username, email, current_belt, current_stripes, 
-                   experience_months, gi_preference, total_sessions, total_hours
-            FROM users 
-            WHERE username = ? AND password_hash = ?
-        ''', (username, password_hash))
-        
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result:
-            return {
-                'user_id': result[0],
-                'username': result[1],
-                'email': result[2],
-                'current_belt': result[3],
-                'current_stripes': result[4],
-                'experience_months': result[5],
-                'gi_preference': result[6],
-                'total_sessions': result[7],
-                'total_hours': result[8]
-            }
-        return None
+        """사용자 인증 (개선된 에러 처리)"""
+        try:
+            password_hash = hashlib.sha256(password.encode()).hexdigest()
+            
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute('''
+                    SELECT id, username, email, current_belt, current_stripes, 
+                           experience_months, gi_preference, total_sessions, total_hours,
+                           created_at, last_login
+                    FROM users 
+                    WHERE username = ? AND password_hash = ? AND is_active = 1
+                ''', (username, password_hash))
+                
+                result = cursor.fetchone()
+                
+                if result:
+                    # 마지막 로그인 시간 업데이트
+                    cursor.execute('''
+                        UPDATE users SET last_login = CURRENT_TIMESTAMP 
+                        WHERE id = ?
+                    ''', (result['id'],))
+                    conn.commit()
+                    
+                    user_data = dict(result)
+                    self.logger.info(f"User authenticated successfully: {username}")
+                    return user_data
+                else:
+                    self.logger.warning(f"Authentication failed for user: {username}")
+                    return None
+                    
+        except Exception as e:
+            self.logger.error(f"Authentication error for {username}: {e}")
+            raise DatabaseError(f"인증 중 오류가 발생했습니다: {e}")
+    
+    def check_username_availability(self, username: str) -> bool:
+        """사용자명 사용 가능 여부 확인 (개선된 버전)"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT COUNT(*) as count FROM users WHERE username = ?", 
+                    (username,)
+                )
+                result = cursor.fetchone()
+                return result['count'] == 0
+                
+        except Exception as e:
+            self.logger.error(f"Error checking username availability: {e}")
+            # 에러 발생시 안전하게 False 반환 (중복으로 간주)
+            return False
+    
+    def check_email_availability(self, email: str) -> bool:
+        """이메일 사용 가능 여부 확인"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT COUNT(*) as count FROM users WHERE email = ?", 
+                    (email,)
+                )
+                result = cursor.fetchone()
+                return result['count'] == 0
+                
+        except Exception as e:
+            self.logger.error(f"Error checking email availability: {e}")
+            return False
     
     def save_training_session(self, session_data: Dict) -> str:
-        """훈련 세션 저장 (NLP 분석 결과 포함)"""
-        session_id = str(uuid.uuid4())
-        
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO training_sessions (
-                id, user_id, belt_level, total_duration, completion_rate,
-                difficulty_rating, enjoyment_rating, techniques_practiced,
-                program_data, notes, nlp_analysis
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            session_id,
-            session_data['user_id'],
-            session_data['belt_level'],
-            session_data['total_duration'],
-            session_data['completion_rate'],
-            session_data.get('difficulty_rating'),
-            session_data.get('enjoyment_rating'),
-            json.dumps(session_data.get('techniques_practiced', [])),
-            json.dumps(session_data.get('program_data', {})),
-            session_data.get('notes', ''),
-            json.dumps(session_data.get('nlp_analysis', {}))  # 추가
-        ))
-        
-        # 사용자 총 세션 수와 시간 업데이트
-        cursor.execute('''
-            UPDATE users 
-            SET total_sessions = total_sessions + 1,
-                total_hours = total_hours + ?,
-                last_login = CURRENT_TIMESTAMP
-            WHERE id = ?
-        ''', (session_data['total_duration'] / 60.0, session_data['user_id']))
-        
-        conn.commit()
-        conn.close()
-        
-        return session_id
+        """훈련 세션 저장 (트랜잭션 안전성 강화)"""
+        try:
+            session_id = str(uuid.uuid4())
+            
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # 훈련 세션 저장
+                cursor.execute('''
+                    INSERT INTO training_sessions (
+                        id, user_id, belt_level, total_duration, completion_rate,
+                        difficulty_rating, enjoyment_rating, techniques_practiced,
+                        program_data, notes, nlp_analysis
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    session_id,
+                    session_data['user_id'],
+                    session_data['belt_level'],
+                    session_data['total_duration'],
+                    session_data['completion_rate'],
+                    session_data.get('difficulty_rating'),
+                    session_data.get('enjoyment_rating'),
+                    json.dumps(session_data.get('techniques_practiced', [])),
+                    json.dumps(session_data.get('program_data', {})),
+                    session_data.get('notes', ''),
+                    json.dumps(session_data.get('nlp_analysis', {}))
+                ))
+                
+                # 사용자 통계 업데이트 (원자적 연산)
+                cursor.execute('''
+                    UPDATE users 
+                    SET total_sessions = total_sessions + 1,
+                        total_hours = total_hours + ?,
+                        last_login = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (session_data['total_duration'] / 60.0, session_data['user_id']))
+                
+                # 변경된 행 수 확인
+                if cursor.rowcount == 0:
+                    raise DatabaseError("사용자를 찾을 수 없습니다.")
+                
+                conn.commit()
+                self.logger.info(f"Training session saved: {session_id}")
+                return session_id
+                
+        except Exception as e:
+            self.logger.error(f"Failed to save training session: {e}")
+            raise DatabaseError(f"훈련 세션 저장 실패: {e}")
     
     def get_user_stats(self, user_id: str) -> Dict:
-        """사용자 통계 조회"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # 기본 사용자 정보
-        cursor.execute('''
-            SELECT current_belt, total_sessions, total_hours, experience_months
-            FROM users WHERE id = ?
-        ''', (user_id,))
-        user_info = cursor.fetchone()
-        
-        # 최근 세션들
-        cursor.execute('''
-            SELECT session_date, completion_rate, difficulty_rating, enjoyment_rating
-            FROM training_sessions 
-            WHERE user_id = ? 
-            ORDER BY session_date DESC 
-            LIMIT 10
-        ''', (user_id,))
-        recent_sessions = cursor.fetchall()
-        
-        # 기술 마스터리
-        cursor.execute('''
-            SELECT technique_name, category, practice_count, mastery_level
-            FROM technique_mastery 
-            WHERE user_id = ? 
-            ORDER BY mastery_level DESC
-            LIMIT 20
-        ''', (user_id,))
-        top_techniques = cursor.fetchall()
-        
-        conn.close()
-        
-        if user_info:
-            return {
-                'current_belt': user_info[0],
-                'total_sessions': user_info[1],
-                'total_hours': user_info[2],
-                'experience_months': user_info[3],
-                'recent_sessions': recent_sessions,
-                'top_techniques': top_techniques,
-                'avg_completion_rate': np.mean([s[1] for s in recent_sessions]) if recent_sessions else 0,
-                'avg_difficulty': np.mean([s[2] for s in recent_sessions if s[2]]) if recent_sessions else 0
-            }
-        return {}
+        """사용자 통계 조회 (개선된 에러 처리)"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # 기본 사용자 정보
+                cursor.execute('''
+                    SELECT current_belt, total_sessions, total_hours, experience_months,
+                           created_at, last_login
+                    FROM users WHERE id = ?
+                ''', (user_id,))
+                user_info = cursor.fetchone()
+                
+                if not user_info:
+                    raise DatabaseError("사용자를 찾을 수 없습니다.")
+                
+                # 최근 세션들
+                cursor.execute('''
+                    SELECT session_date, completion_rate, difficulty_rating, enjoyment_rating
+                    FROM training_sessions 
+                    WHERE user_id = ? 
+                    ORDER BY session_date DESC 
+                    LIMIT 10
+                ''', (user_id,))
+                recent_sessions = [dict(row) for row in cursor.fetchall()]
+                
+                # 기술 마스터리
+                cursor.execute('''
+                    SELECT technique_name, category, practice_count, mastery_level
+                    FROM technique_mastery 
+                    WHERE user_id = ? 
+                    ORDER BY mastery_level DESC
+                    LIMIT 20
+                ''', (user_id,))
+                top_techniques = [dict(row) for row in cursor.fetchall()]
+                
+                # 통계 계산
+                import numpy as np
+                avg_completion_rate = (
+                    np.mean([s['completion_rate'] for s in recent_sessions]) 
+                    if recent_sessions else 0
+                )
+                avg_difficulty = (
+                    np.mean([s['difficulty_rating'] for s in recent_sessions 
+                            if s['difficulty_rating'] is not None]) 
+                    if recent_sessions else 0
+                )
+                
+                result = {
+                    'current_belt': user_info['current_belt'],
+                    'total_sessions': user_info['total_sessions'],
+                    'total_hours': user_info['total_hours'],
+                    'experience_months': user_info['experience_months'],
+                    'recent_sessions': recent_sessions,
+                    'top_techniques': top_techniques,
+                    'avg_completion_rate': avg_completion_rate,
+                    'avg_difficulty': avg_difficulty,
+                    'created_at': user_info['created_at'],
+                    'last_login': user_info['last_login']
+                }
+                
+                self.logger.debug(f"User stats retrieved for: {user_id}")
+                return result
+                
+        except Exception as e:
+            self.logger.error(f"Failed to get user stats for {user_id}: {e}")
+            raise DatabaseError(f"사용자 통계 조회 실패: {e}")
     
     def update_technique_mastery(self, user_id: str, technique_name: str, 
                                category: str, difficulty: int, success: bool):
-        """기술 마스터리 업데이트"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # 기존 기록 확인
-        cursor.execute('''
-            SELECT practice_count, mastery_level, success_rate
-            FROM technique_mastery 
-            WHERE user_id = ? AND technique_name = ?
-        ''', (user_id, technique_name))
-        
-        result = cursor.fetchone()
-        
-        if result:
-            # 기존 기록 업데이트
-            practice_count, mastery_level, success_rate = result
-            new_practice_count = practice_count + 1
-            new_success_rate = ((success_rate * practice_count) + (1.0 if success else 0.0)) / new_practice_count
-            new_mastery_level = min(1.0, mastery_level + (0.1 if success else 0.05))
-            
-            cursor.execute('''
-                UPDATE technique_mastery 
-                SET practice_count = ?, mastery_level = ?, success_rate = ?, last_practiced = CURRENT_TIMESTAMP
-                WHERE user_id = ? AND technique_name = ?
-            ''', (new_practice_count, new_mastery_level, new_success_rate, user_id, technique_name))
-        else:
-            # 새 기록 생성
-            cursor.execute('''
-                INSERT INTO technique_mastery (
-                    user_id, technique_name, category, difficulty, 
-                    practice_count, mastery_level, success_rate, last_practiced
-                ) VALUES (?, ?, ?, ?, 1, ?, ?, CURRENT_TIMESTAMP)
-            ''', (user_id, technique_name, category, difficulty, 
-                  0.1 if success else 0.05, 1.0 if success else 0.5))
-        
-        conn.commit()
-        conn.close()
+        """기술 마스터리 업데이트 (UPSERT 패턴 사용)"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # 기존 기록 확인
+                cursor.execute('''
+                    SELECT practice_count, mastery_level, success_rate
+                    FROM technique_mastery 
+                    WHERE user_id = ? AND technique_name = ?
+                ''', (user_id, technique_name))
+                
+                result = cursor.fetchone()
+                
+                if result:
+                    # 기존 기록 업데이트
+                    practice_count = result['practice_count']
+                    mastery_level = result['mastery_level']
+                    success_rate = result['success_rate']
+                    
+                    new_practice_count = practice_count + 1
+                    new_success_rate = (
+                        (success_rate * practice_count + (1.0 if success else 0.0)) 
+                        / new_practice_count
+                    )
+                    new_mastery_level = min(1.0, mastery_level + (0.1 if success else 0.05))
+                    
+                    cursor.execute('''
+                        UPDATE technique_mastery 
+                        SET practice_count = ?, mastery_level = ?, success_rate = ?, 
+                            last_practiced = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                        WHERE user_id = ? AND technique_name = ?
+                    ''', (new_practice_count, new_mastery_level, new_success_rate, 
+                          user_id, technique_name))
+                else:
+                    # 새 기록 생성
+                    cursor.execute('''
+                        INSERT INTO technique_mastery (
+                            user_id, technique_name, category, difficulty, 
+                            practice_count, mastery_level, success_rate, last_practiced
+                        ) VALUES (?, ?, ?, ?, 1, ?, ?, CURRENT_TIMESTAMP)
+                    ''', (user_id, technique_name, category, difficulty, 
+                          0.1 if success else 0.05, 1.0 if success else 0.5))
+                
+                conn.commit()
+                self.logger.debug(f"Technique mastery updated: {technique_name} for {user_id}")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to update technique mastery: {e}")
+            raise DatabaseError(f"기술 마스터리 업데이트 실패: {e}")
+    
+    def get_database_health(self) -> Dict:
+        """데이터베이스 상태 확인"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # 테이블별 레코드 수 확인
+                tables = ['users', 'training_sessions', 'user_preferences', 'technique_mastery']
+                health_info = {'status': 'healthy', 'tables': {}}
+                
+                for table in tables:
+                    cursor.execute(f"SELECT COUNT(*) as count FROM {table}")
+                    count = cursor.fetchone()['count']
+                    health_info['tables'][table] = count
+                
+                # 데이터베이스 크기 확인
+                cursor.execute("PRAGMA page_count")
+                page_count = cursor.fetchone()[0]
+                cursor.execute("PRAGMA page_size")
+                page_size = cursor.fetchone()[0]
+                
+                health_info['size_mb'] = (page_count * page_size) / (1024 * 1024)
+                health_info['last_check'] = datetime.now().isoformat()
+                
+                return health_info
+                
+        except Exception as e:
+            self.logger.error(f"Database health check failed: {e}")
+            return {'status': 'unhealthy', 'error': str(e)}
+
+# =============================================================================
+# 기존 코드와의 호환성을 위한 래퍼
+# =============================================================================
+
+# 기존 BJJDatabase를 ImprovedBJJDatabase로 교체
+BJJDatabase = ImprovedBJJDatabase
 
 # =============================================================================
 # 주짓수 벨트 시스템 정의
