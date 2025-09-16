@@ -2249,8 +2249,11 @@ class SmartTrainingGenerator:
         avoided_techniques = []
         if negation_analysis.get('has_negation'):
             for concept in negation_analysis.get('negated_concepts', []):
-                avoided_techniques.append(concept['context_after'].strip())
-        
+            
+            context_after = concept.get('context_after', '')
+            if context_after:
+                avoided_techniques.append(context_after.strip())
+                        
         # 기술 필터링
         available_techniques = self.db.filter_techniques(
             max_difficulty=max_difficulty,
